@@ -1,6 +1,6 @@
 def run_test():
-    # Pick ports
-
+    # Pick four random ports
+    
     # Generate bootstrap
 
     # Start servers on the free port
