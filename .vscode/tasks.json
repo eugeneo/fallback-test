@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Client",
+      "command": "${workspaceFolder:fallback-test}/run-client.sh",
+      "type": "shell",
+      "args": [],
+      "problemMatcher": [
+      ],
+      "presentation": {
+        "reveal": "always"
+      },
+      "group": "none"
+    },
+    {
+      "label": "Run Server",
+      "command": "${workspaceFolder:fallback-test}/run-server.sh",
+      "type": "shell",
+      "args": [],
+      "problemMatcher": [
+      ],
+      "presentation": {
+        "reveal": "always"
+      },
+      "group": "none"
+    }
+  ]
+}
