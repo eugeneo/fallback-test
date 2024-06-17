@@ -2,10 +2,11 @@ from absl import flags
 from datetime import datetime
 import docker
 from mako.template import Template
+from multiprocessing import Process, Queue
 import os
 import socket
-from typing import List
 import sys
+from typing import List
 
 FLAGS = flags.FLAGS
 
@@ -83,7 +84,6 @@ def run_docker_test():
 
 
 class Server:
-
     def __init__(
         self,
         port: int,
@@ -123,6 +123,29 @@ class Server:
         pass
 
 
+class ProcessWrapper:
+    def __init__(self, process: Process):
+        self.process = process
+
+    def __enter__(self):
+        self.process.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.process.kill()
+        return False
+
+
+def StartServer(
+    queue: Queue,
+    port: int,
+    image: str,
+    id_string: str,
+    docker_client=docker.from_env(),
+):
+    return ProcessWrapper(Process.start)
+
+
 def run_test():
     FLAGS(sys.argv)
     working_dir = pick_working_dir(FLAGS.working_dir)
@@ -140,12 +163,10 @@ def run_test():
         destination=os.path.join(mnt_dir, "mnt/bootstrap.json"),
         dry_run=FLAGS.dry_run,
     )
-
+    output_queue = Queue()
     # Start servers on the free port
-    with (server1 := Server(server1_port, FLAGS.server_image, "server1")):
-        server1_logs = server1.logs()
-        while True:
-            print(next(server1_logs).decode("utf-8"))
+    with StartServer(server1_port, FLAGS.server_image, "server1") as server1:
+        print("Inner")
 
     # server2 = Server(server2_port)
     # Start client
