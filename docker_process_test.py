@@ -1,14 +1,15 @@
+from typing import List
 from docker import DockerClient
 import multiprocessing
 import unittest
 
 
-from docker_process import ChildProcessEventType, DockerProcess
+from docker_process import ChildProcessEvent, ChildProcessEventType, DockerProcess
 
 
 class DockerProcessTest(unittest.TestCase):
 
-    def test_start_stop(self):
+    def test_runs_to_completion(self):
         queue = multiprocessing.Queue()
         messages: list[str] = []
         with DockerProcess("hello-world", queue, DockerClient.from_env()):
@@ -22,25 +23,32 @@ class DockerProcessTest(unittest.TestCase):
         self.assertEqual(messages[0], "Hello from Docker!")
         self.assertEqual(messages[-1], " https://docs.docker.com/get-started/")
 
-    def test_start_xds_server(self):
+    def test_xds_server(self):
         queue = multiprocessing.Queue()
         docker_client = DockerClient.from_env()
         name = None
-        with DockerProcess(
-            "us-docker.pkg.dev/grpc-testing/psm-interop/cpp-server:master",
-            queue,
-            docker_client,
-        ):
-            event = queue.get(timeout=5)
-            self.assertEqual(event.type, ChildProcessEventType.START)
-            name = event.data
-            container = self.FindContainer(docker_client, name)
-            self.assertIsNotNone(container)
-            while True:
+        output: List[str] = []
+        try:
+            with DockerProcess(
+                "us-docker.pkg.dev/grpc-testing/psm-interop/cpp-server:master",
+                queue,
+                docker_client,
+                command="--port 3333",
+            ):
                 event = queue.get(timeout=5)
-                self.assertEqual(event.type, ChildProcessEventType.OUTPUT)
-                if str(event.data).find("Server listening on 0.0.0.0:8080") >= 0:
-                    break
+                self.assertEqual(event.type, ChildProcessEventType.START)
+                name = event.data
+                container = self.FindContainer(docker_client, name)
+                self.assertIsNotNone(container)
+                while True:
+                    event: ChildProcessEvent = queue.get(timeout=5)
+                    self.assertEqual(event.type, ChildProcessEventType.OUTPUT)
+                    output.append(event.data)
+                    if event.data.find("Server listening on 0.0.0.0:3333") >= 0:
+                        break
+        except Exception:
+            print("\n".join(output))
+            raise
         event = queue.get(timeout=30)  # longer timeout, Docker stop
         self.assertEqual(event.type, ChildProcessEventType.STOP)
         self.assertIsNone(self.FindContainer(docker_client, name))

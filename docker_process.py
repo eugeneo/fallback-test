@@ -1,10 +1,12 @@
 import atexit
+import copy
 from enum import Enum
 import multiprocessing
 import signal
 from typing import Callable
 
-from docker import DockerClient
+import docker
+import docker.types
 
 
 ChildProcessEventType = Enum("ChildProcessEventType", ["START", "STOP", "OUTPUT"])
@@ -29,12 +31,16 @@ def _Sanitize(l: str) -> str:
 
 
 def _RunDocker(
-    docker_client: DockerClient,
+    docker_client: docker.DockerClient,
     onStart: Callable[[object], None],
     onOutput: Callable[[str], None],
     image: str,
+    config: docker.types.ContainerConfig | None,
 ):
-    container = docker_client.containers.run(image, detach=True)
+    cfg = config.copy()
+    cfg["image"] = image
+    cfg["detach"] = True
+    container = docker_client.containers.run(**cfg)
     onStart(container)
     prefix = ""
     for log in container.logs(stream=True):
@@ -45,14 +51,22 @@ def _RunDocker(
 
 
 class DockerProcess:
+
     def __init__(
-        self, image: str, queue: multiprocessing.Queue, docker_client: DockerClient
+        self,
+        image: str,
+        queue: multiprocessing.Queue,
+        docker_client: docker.DockerClient,
+        **config: docker.types.ContainerConfig,
     ):
         self._docker_client = docker_client
         self._queue = queue
         self._reported_done = False
+        self._container = None
+        self._exit_code = None
         self.process = multiprocessing.Process(
-            target=lambda image: self.Process(image), args=(image,)
+            target=lambda image, config: self.Process(image, config),
+            args=(image, config),
         )
 
     def __enter__(self):
@@ -61,7 +75,7 @@ class DockerProcess:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.process.terminate()
 
-    def Process(self, image: str):
+    def Process(self, image: str, config: docker.types.ContainerConfig | None):
         atexit.register(lambda: self.OnExit())
         signal.signal(signal.SIGTERM, lambda _signo, _frame: self.OnExit())
         try:
@@ -72,6 +86,7 @@ class DockerProcess:
                     ChildProcessEvent(ChildProcessEventType.OUTPUT, message)
                 ),
                 image,
+                config,
             )
         finally:
             self.OnExit()
