@@ -3,6 +3,7 @@ import copy
 from enum import Enum
 import multiprocessing
 import signal
+import sys
 from typing import Callable
 
 import docker
@@ -13,15 +14,17 @@ ChildProcessEventType = Enum("ChildProcessEventType", ["START", "STOP", "OUTPUT"
 
 
 class ChildProcessEvent:
-    def __init__(self, type: ChildProcessEventType, data: str = None):
-        self.type = type
+
+    def __init__(self, type: ChildProcessEventType, source: str, data: str | None):
+        self.source = source
         self.data = data
+        self.type = type
 
     def __str__(self) -> str:
-        return f"{self.type}, {self.data}"
+        return f"{self.type}, {self.data}, {self.source}"
 
     def __repr__(self) -> str:
-        return f"type={self.type}, data={self.data}"
+        return f"type={self.type}, data={self.data}, source={self.source}"
 
 
 def _Sanitize(l: str) -> str:
@@ -51,23 +54,26 @@ def _RunDocker(
 
 
 class DockerProcess:
-
     def __init__(
         self,
         image: str,
         queue: multiprocessing.Queue,
+        name: str,
         docker_client: docker.DockerClient,
+        logFile: str = None,
         **config: docker.types.ContainerConfig,
     ):
-        self._docker_client = docker_client
-        self._queue = queue
-        self._reported_done = False
-        self._container = None
-        self._exit_code = None
+        self.__docker_client = docker_client
+        self.__queue = queue
+        self.__reported_done = False
+        self.__container = None
+        self.__exit_code = None
+        self.__name = name
         self.process = multiprocessing.Process(
             target=lambda image, config: self.Process(image, config),
             args=(image, config),
         )
+        self.__logFileName = logFile
 
     def __enter__(self):
         self.process.start()
@@ -76,31 +82,54 @@ class DockerProcess:
         self.process.terminate()
 
     def Process(self, image: str, config: docker.types.ContainerConfig | None):
-        atexit.register(lambda: self.OnExit())
-        signal.signal(signal.SIGTERM, lambda _signo, _frame: self.OnExit())
+        if self.__logFileName != None:
+            self.__logFile = open(self.__logFileName, "w+")
+        atexit.register(lambda: self.__OnExit())
+        signal.signal(signal.SIGTERM, lambda _signo, _frame: self.__OnExit())
+        process = self
         try:
             _RunDocker(
-                self._docker_client,
-                lambda container: self.SetContainer(container),
-                lambda message: self._queue.put(
-                    ChildProcessEvent(ChildProcessEventType.OUTPUT, message)
-                ),
+                self.__docker_client,
+                lambda container: process.__SetContainer(container),
+                lambda message: process.__OnMessage(message),
                 image,
                 config,
             )
+        except KeyboardInterrupt:
+            # Less noise by removing the useless stack trace
+            print(f"KeyboardInterrupt in {self.__name}", file=sys.stderr)
         finally:
-            self.OnExit()
+            self.__OnExit()
 
-    def SetContainer(self, container):
-        self._container = container
-        self._queue.put(ChildProcessEvent(ChildProcessEventType.START, container.name))
+    def __SetContainer(self, container):
+        self.__container = container
+        self.__queue.put(
+            ChildProcessEvent(ChildProcessEventType.START, self.__name, container.name)
+        )
 
-    def OnExit(self):
-        if not self._reported_done:
-            if self._container != None:
-                self._container.stop(timeout=5)
-                self._exit_code = self._container.wait(timeout=5)
-            self._queue.put(
-                ChildProcessEvent(ChildProcessEventType.STOP, self._exit_code)
+    def __OnMessage(self, message: str):
+        self.__queue.put(
+            ChildProcessEvent(ChildProcessEventType.OUTPUT, self.__name, message)
+        )
+        if self.__logFile:
+            self.__logFile.write(message)
+            self.__logFile.write("\n")
+            # self.__logFile.flush()
+
+    def __OnExit(self):
+        if not self.__reported_done:
+            try:
+                if self.__logFile:
+                    self.__logFile.close()
+            except Exception:
+                # Don't care
+                pass
+            if self.__container != None:
+                self.__container.stop(timeout=5)
+                self.__exit_code = self.__container.wait(timeout=5)
+            self.__queue.put(
+                ChildProcessEvent(
+                    ChildProcessEventType.STOP, self.__name, self.__exit_code
+                )
             )
-            self._reported_done = True
+            self.__reported_done = True
