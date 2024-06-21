@@ -5,6 +5,7 @@ import time
 from absl import flags
 from datetime import datetime
 import docker
+import grpc
 from mako.template import Template
 from multiprocessing import Process, Queue
 import os
@@ -13,6 +14,9 @@ import sys
 from typing import List
 
 from docker_process import ChildProcessEvent, ChildProcessEventType, DockerProcess
+from protos.grpc.testing import empty_pb2
+from protos.grpc.testing import messages_pb2
+from protos.grpc.testing import test_pb2_grpc
 
 FLAGS = flags.FLAGS
 
@@ -129,9 +133,10 @@ class ProcessManager:
     def StartClient(self, port: int, url: str, name="client") -> DockerProcess:
         return self.__StartDockerProcess(
             self.__clientImage,
-            name=name,
-            ports={3333: port},
             command=["--server", url],
+            name=name,
+            ports={50052: port},
+            verbosity="debug",
             volumes={
                 self.__workingDir.mount_dir().absolute(): {
                     "bind": "/grpc",
@@ -151,7 +156,13 @@ class ProcessManager:
         )
 
     def __StartDockerProcess(
-        self, image: str, name: str, ports, command: List[str], volumes={}
+        self,
+        image: str,
+        name: str,
+        ports,
+        command: List[str],
+        volumes={},
+        verbosity="info",
     ):
         log_name = self.__workingDir.log_path(name)
         self.logs.append(log_name)
@@ -165,7 +176,7 @@ class ProcessManager:
             ports=ports,
             command=command,
             environment={
-                "GRPC_VERBOSITY": "info",
+                "GRPC_VERBOSITY": verbosity,
                 "GRPC_TRACE": "xds_client",
                 "GRPC_XDS_BOOTSTRAP": "/grpc/bootstrap.json",
             },
@@ -174,6 +185,12 @@ class ProcessManager:
 
     def NextMessage(self, timeout: int) -> ChildProcessEvent:
         return self.__queue.get(timeout=timeout)
+
+
+def GetStats(client_url: str):
+    with grpc.insecure_channel(client_url) as channel:
+        stub = test_pb2_grpc.LoadBalancerStatsServiceStub(channel)
+        print(stub.GetClientStats(messages_pb2.LoadBalancerStatsRequest(num_rpcs=20)))
 
 
 def run_test():
@@ -216,10 +233,9 @@ def run_test():
                         if event.type == ChildProcessEventType.OUTPUT:
                             print(f"[{event.source}] {event.data}")
                 except Empty:
-                    print("No messages")
-                    if FLAGS.hang:
-                        while True:
-                            time.sleep(300)
+                    # Assume everything is running
+                    pass
+                GetStats(f"localhost:{client_port}")
 
         except KeyboardInterrupt:
             # Stack trace is useless here, reduce log noise
