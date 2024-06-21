@@ -1,5 +1,7 @@
 from pathlib import Path, PosixPath
+from queue import Empty
 import shutil
+import time
 from absl import flags
 from datetime import datetime
 import docker
@@ -35,6 +37,12 @@ flags.DEFINE_string("node", "test-id", "Node ID")
 flags.DEFINE_integer(
     "message_timeout", 5, "Timeout waiting for the messages from the server processes"
 )
+flags.DEFINE_boolean(
+    "hang", False, "Hang after the test so the state of the mesh could be explored"
+)
+flags.DEFINE_string(
+    "host_name", "host.docker.internal", "Host name all the services are bound on"
+)
 
 
 def get_free_port() -> int:
@@ -43,40 +51,11 @@ def get_free_port() -> int:
         return sock.getsockname()[1]
 
 
-def run_docker_test():
-    client = docker.from_env()
-    script_path = os.path.abspath(__file__)
-    test_dir = os.path.dirname(script_path)
-    image_grpc_dir = "/grpc"
-
-    print(f"Test directory: {test_dir}")
-
-    try:
-        container = client.containers.run(
-            # image="us-docker.pkg.dev/grpc-testing/psm-interop/cpp-client:master",
-            command="--server xds:///listener_0",
-            environment={
-                "GRPC_VERBOSITY": "info",
-                "GPRC_TRACE": "xds_client",
-                "GRPC_XDS_BOOTSTRAP": f"{image_grpc_dir}/bootstrap.json",
-            },
-            volumes={test_dir: {"bind": image_grpc_dir, "mode": "ro"}},
-            extra_hosts={"host.docker.internal": "host-gateway"},
-            detach=False,  # Run in foreground
-            tty=True,  # Allocate a pseudo-TTY
-        )
-        for line in container.logs(stream=True):
-            print(line.strip().decode("utf-8"))
-
-    except docker.errors.ImageNotFound:
-        print("Docker image not found. Please pull the image first.")
-    except docker.errors.APIError as e:
-        print(f"An error occurred: {e}")
-
-
 class WorkingDir:
-    def __init__(self, base: str, ports: List[int]):
+
+    def __init__(self, base: str, ports: List[int], host_name: str):
         self.__base = PosixPath(base)
+        self.__host_name = host_name
         self.__ports = ports
         self.__working_dir: Path = None
 
@@ -84,7 +63,9 @@ class WorkingDir:
         self._MakeWorkingDir(self.__base)
         # Use Mako
         template = Template(filename="templates/bootstrap.mako")
-        file = template.render(servers=[f"localhost:{port}" for port in self.__ports])
+        file = template.render(
+            servers=[f"{self.__host_name}:{port}" for port in self.__ports]
+        )
         destination = os.path.join(self.mount_dir(), "bootstrap.json")
         with open(destination, "w") as f:
             f.write(file)
@@ -141,7 +122,7 @@ class ProcessManager:
         return self.__StartDockerProcess(
             self.__serverImage,
             name=name,
-            ports={3333: port},
+            ports={8080: port},
             command=["--server_id", name],
         )
 
@@ -205,7 +186,9 @@ def run_test():
     )
     # Start servers on the free port
     with WorkingDir(
-        FLAGS.working_dir, ports=[primary_port, fallback_port]
+        FLAGS.working_dir,
+        ports=[primary_port, fallback_port],
+        host_name=FLAGS.host_name,
     ) as working_dir:
         print("Working directory: ", working_dir.working_dir())
         process_manager = ProcessManager(
@@ -216,19 +199,28 @@ def run_test():
         )
         try:
             with (
-                # process_manager.StartServer(name="server1", port=server1_port),
+                process_manager.StartServer(name="server1", port=server1_port),
                 # process_manager.StartServer(name="server2", port=server2_port),
                 process_manager.StartClient(port=client_port, url="xds:///listener_0"),
                 process_manager.StartControlPlane(
                     port=primary_port,
                     nodeId=FLAGS.node,
-                    upstream=f"localhost:{server1_port}",
+                    upstream=f"{FLAGS.host_name}:{server1_port}",
                 ),
             ):
-                while True:
-                    event = process_manager.NextMessage(timeout=FLAGS.message_timeout)
-                    if event.type == ChildProcessEventType.OUTPUT:
-                        print(f"[{event.source}] {event.data}")
+                try:
+                    while True:
+                        event = process_manager.NextMessage(
+                            timeout=FLAGS.message_timeout
+                        )
+                        if event.type == ChildProcessEventType.OUTPUT:
+                            print(f"[{event.source}] {event.data}")
+                except Empty:
+                    print("No messages")
+                    if FLAGS.hang:
+                        while True:
+                            time.sleep(300)
+
         except KeyboardInterrupt:
             # Stack trace is useless here, reduce log noise
             print("KeyboardInterrupt", file=sys.stderr)
