@@ -80,6 +80,7 @@ class DockerProcess:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.process.terminate()
+        self.process.join()
 
     def Process(self, image: str, config: docker.types.ContainerConfig | None):
         if self.__logFileName != None:
@@ -111,10 +112,13 @@ class DockerProcess:
         self.__queue.put(
             ChildProcessEvent(ChildProcessEventType.OUTPUT, self.__name, message)
         )
-        if self.__logFile:
-            self.__logFile.write(message)
-            self.__logFile.write("\n")
-            # self.__logFile.flush()
+        try:
+            if self.__logFile:
+                self.__logFile.write(message)
+                self.__logFile.write("\n")
+        except Exception:
+            # Ignore, this is just a log.
+            pass
 
     def __OnExit(self):
         if not self.__reported_done:
