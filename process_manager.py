@@ -4,7 +4,7 @@ from typing import Callable, List
 
 from docker import DockerClient
 
-from docker_process import ChildProcessEvent, ChildProcessEventType, DockerProcess
+from docker_process import ChildProcessEvent, DockerProcess
 from working_dir import WorkingDir
 
 
@@ -90,13 +90,12 @@ class ProcessManager:
 
     def NextEvent(self, timeout: int) -> ChildProcessEvent:
         event: ChildProcessEvent = self.__queue.get(timeout=timeout)
-        if event.type == ChildProcessEventType.OUTPUT:
-            source = event.source
-            message = event.data
-            print(f"[{source}] {message}")
-            if not source in self.__outputs:
-                self.__outputs[source] = []
-            self.__outputs[source].append(message)
+        source = event.source
+        message = event.data
+        print(f"[{source}] {message}")
+        if not source in self.__outputs:
+            self.__outputs[source] = []
+        self.__outputs[source].append(message)
         return event
 
     def ExpectOutput(
@@ -109,10 +108,6 @@ class ProcessManager:
         deadline = datetime.now() + timedelta(seconds=timeout_s)
         while datetime.now() <= deadline:
             event = self.NextEvent(timeout_s)
-            if (
-                event.type == ChildProcessEventType.OUTPUT
-                and event.source == source
-                and predicate(event.data)
-            ):
+            if event.source == source and predicate(event.data):
                 return True
         return False

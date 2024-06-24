@@ -10,21 +10,17 @@ import docker
 import docker.types
 
 
-ChildProcessEventType = Enum("ChildProcessEventType", ["START", "STOP", "OUTPUT"])
-
-
 class ChildProcessEvent:
 
-    def __init__(self, type: ChildProcessEventType, source: str, data: str | None):
+    def __init__(self, source: str, data: str):
         self.source = source
         self.data = data
-        self.type = type
 
     def __str__(self) -> str:
-        return f"{self.type}, {self.data}, {self.source}"
+        return f"{self.data}, {self.source}"
 
     def __repr__(self) -> str:
-        return f"type={self.type}, data={self.data}, source={self.source}"
+        return f"data={self.data}, source={self.source}"
 
 
 def _Sanitize(l: str) -> str:
@@ -67,7 +63,6 @@ class DockerProcess:
         self.__queue = queue
         self.__reported_done = False
         self.__container = None
-        self.__exit_code = None
         self.__name = name
         self.process = multiprocessing.Process(
             target=lambda image, config: self.Process(image, config),
@@ -104,14 +99,9 @@ class DockerProcess:
 
     def __SetContainer(self, container):
         self.__container = container
-        self.__queue.put(
-            ChildProcessEvent(ChildProcessEventType.START, self.__name, container.name)
-        )
 
     def __OnMessage(self, message: str):
-        self.__queue.put(
-            ChildProcessEvent(ChildProcessEventType.OUTPUT, self.__name, message)
-        )
+        self.__queue.put(ChildProcessEvent(self.__name, message))
         try:
             if self.__logFile:
                 self.__logFile.write(message)
@@ -130,10 +120,5 @@ class DockerProcess:
                 pass
             if self.__container != None:
                 self.__container.stop(timeout=5)
-                self.__exit_code = self.__container.wait(timeout=5)
-            self.__queue.put(
-                ChildProcessEvent(
-                    ChildProcessEventType.STOP, self.__name, self.__exit_code
-                )
-            )
+                self.__container.wait(timeout=5)
             self.__reported_done = True
