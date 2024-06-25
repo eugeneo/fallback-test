@@ -63,7 +63,7 @@ class DockerProcess:
         self.__queue = queue
         self.__reported_done = False
         self.__container = None
-        self.__name = name
+        self.name = name
         self.process = multiprocessing.Process(
             target=lambda image, config: self.Process(image, config),
             args=(image, config),
@@ -93,7 +93,7 @@ class DockerProcess:
             )
         except KeyboardInterrupt:
             # Less noise by removing the useless stack trace
-            print(f"KeyboardInterrupt in {self.__name}", file=sys.stderr)
+            print(f"KeyboardInterrupt in {self.name}", file=sys.stderr)
         finally:
             self.__OnExit()
 
@@ -101,7 +101,7 @@ class DockerProcess:
         self.__container = container
 
     def __OnMessage(self, message: str):
-        self.__queue.put(ChildProcessEvent(self.__name, message))
+        self.__queue.put(ChildProcessEvent(self.name, message))
         try:
             if self.__logFile:
                 self.__logFile.write(message)
