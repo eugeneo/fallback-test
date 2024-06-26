@@ -16,3 +16,4 @@ platformdirs==4.2.2
 protobuf==5.27.1
 requests==2.32.3
 urllib3==2.2.1
+xds-protos==1.64.1

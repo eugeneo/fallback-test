@@ -10,7 +10,11 @@ from docker_process import ChildProcessEvent, DockerProcess
 from protos.grpc.testing import messages_pb2
 from protos.grpc.testing import test_pb2_grpc
 from working_dir import WorkingDir
-from protos.grpc.testing.xdsconfig import control_pb2, control_pb2_grpc
+from protos.grpc.testing.xdsconfig import (
+    control_pb2,
+    control_pb2_grpc,
+    service_pb2_grpc,
+)
 
 
 class ControlPlane:
@@ -34,7 +38,7 @@ class ControlPlane:
         self, resource_type: str, resource_name: str
     ) -> control_pb2.StopOnRequestResponse:
         with grpc.insecure_channel(f"localhost:{self.__port}") as channel:
-            stub = control_pb2_grpc.XdsConfigControlServiceStub(channel)
+            stub = service_pb2_grpc.XdsConfigControlServiceStub(channel)
             res = stub.StopOnRequest(
                 control_pb2.StopOnRequestRequest(
                     resource_type=resource_type, resource_name=resource_name
@@ -42,6 +46,19 @@ class ControlPlane:
             )
             print(res)
             return res
+
+    def UpdateResources(
+        self, cluster: str, upstream_port: int, upstream_host="localhost"
+    ):
+        with grpc.insecure_channel(f"localhost:{self.__port}") as channel:
+            stub = service_pb2_grpc.XdsConfigControlServiceStub(channel)
+            return stub.UpsertResources(
+                control_pb2.UpsertResourcesRequest(
+                    cluster=cluster,
+                    upstream_host=upstream_host,
+                    upstream_port=upstream_port,
+                )
+            )
 
 
 class Client:

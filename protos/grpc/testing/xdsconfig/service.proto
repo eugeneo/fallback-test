@@ -18,30 +18,9 @@ package grpc.testing.xdsconfig;
 
 option go_package = "grpc/interop/grpc_testing/xdsconfig";
 
-import "google/protobuf/any.proto";
+import "protos/grpc/testing/xdsconfig/control.proto";
 
-
-message StopOnRequestRequest {
-  string resource_type = 1;
-  string resource_name = 2;
-};
-
-message StopOnRequestResponse {
-  message ResourceFilter {
-    string resource_type = 1;
-    string resource_name = 2;
-  };
-
-  repeated ResourceFilter filters = 1;
-};
-
-message UpsertResourcesRequest {
-  optional string listener = 1;
-  string cluster = 2;
-  string upstream_host = 3;
-  uint32 upstream_port = 4;
-};
-
-message UpsertResourcesResponse {
-  repeated google.protobuf.Any resource = 1;
+service XdsConfigControlService {
+  rpc StopOnRequest(StopOnRequestRequest) returns (StopOnRequestResponse);
+  rpc UpsertResources(UpsertResourcesRequest) returns (UpsertResourcesResponse);
 };

@@ -17,5 +17,5 @@ pip install -r requirements.lock
 # Generate protos
 python -m grpc_tools.protoc --proto_path=. \
   --python_out=. --grpc_python_out=. --pyi_out=. \
-  protos/grpc/testing/*.proto
+  protos/grpc/testing/*.proto protos/grpc/testing/**/*.proto
 ```
