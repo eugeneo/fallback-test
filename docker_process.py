@@ -72,6 +72,7 @@ class DockerProcess:
 
     def __enter__(self):
         self.process.start()
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.process.terminate()

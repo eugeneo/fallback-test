@@ -12,7 +12,6 @@ from protos.grpc.testing import test_pb2_grpc
 from working_dir import WorkingDir
 from protos.grpc.testing.xdsconfig import (
     control_pb2,
-    control_pb2_grpc,
     service_pb2_grpc,
 )
 
@@ -29,7 +28,6 @@ class ControlPlane:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> "ControlPlane":
         self.__process.__exit__(exc_type=exc_type, exc_val=exc_val, exc_tb=exc_tb)
-        return self
 
     def ExpectOutput(self, predicate: Callable[[str], bool], timeout_s=5) -> bool:
         return self.__manager.ExpectOutput(self.__process.name, predicate, timeout_s)
@@ -73,7 +71,6 @@ class Client:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> "Client":
         self.__process.__exit__(exc_type=exc_type, exc_val=exc_val, exc_tb=exc_tb)
-        return self
 
     def ExpectOutput(self, predicate: Callable[[str], bool], timeout_s=5) -> bool:
         return self.__manager.ExpectOutput(self.__process.name, predicate, timeout_s)

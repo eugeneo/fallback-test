@@ -12,6 +12,7 @@ docker run -it --rm \
   -e GRPC_VERBOSITY=info \
   -e GPRC_TRACE=xds_client \
   -e GRPC_XDS_BOOTSTRAP=${image_grpc_dir}/bootstrap.json \
+  -p 8080:8080 \
   --add-host=host.docker.internal:host-gateway \
   us-docker.pkg.dev/grpc-testing/psm-interop/cpp-client:master \
   --server xds:///listener_0

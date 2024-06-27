@@ -46,7 +46,6 @@ def get_free_port() -> int:
 
 class DockerProcessTest(unittest.TestCase):
 
-    @unittest.skip("For time saving")
     def test_fallback_on_startup(self):
         [primary_port, fallback_port, server1_port, server2_port, client_port] = [
             get_free_port() for _ in range(5)
@@ -125,7 +124,6 @@ class DockerProcessTest(unittest.TestCase):
             logs = "\n".join([f"\t{log}" for log in sorted(process_manager.logs)])
             print(f"Run finished:\n{logs}")
 
-    @unittest.skip("For time saving")
     def test_fallback_mid_startup(self):
         [primary_port, fallback_port, server1_port, server2_port, client_port] = [
             get_free_port() for _ in range(5)
@@ -259,31 +257,33 @@ class DockerProcessTest(unittest.TestCase):
                     "type.googleapis.com/envoy.config.cluster.v3.Cluster",
                     "test_cluster_2",
                 )
-                primary.UpdateResources(
-                    cluster="test_cluster_2",
-                    upstream_port=server3_port,
-                    upstream_host=FLAGS.host_name,
-                )
-                stats = client.GetStats(10)
-                self.assertEqual(stats.num_failures, 0)
-                self.assertIn(stats.rpcs_by_peer, "server2")
-                with process_manager.StartControlPlane(
-                    name="primary_xds_config_run_2",
-                    port=primary_port,
-                    nodeId=FLAGS.node,
-                    upstream=f"{FLAGS.host_name}:{server1_port}",
-                ):
-                    self.assertTrue(
-                        primary.ExpectOutput(
-                            lambda m: m.find("management server listening on") > 0
-                        )
-                    )
+                print(
                     primary.UpdateResources(
                         cluster="test_cluster_2",
                         upstream_port=server3_port,
                         upstream_host=FLAGS.host_name,
                     )
-                    stats = client.GetStats(10)
+                )
+                stats = client.GetStats(10)
+                self.assertEqual(stats.num_failures, 0)
+                self.assertIn("server2", stats.rpcs_by_peer)
+                with process_manager.StartControlPlane(
+                    name="primary_xds_config_run_2",
+                    port=primary_port,
+                    nodeId=FLAGS.node,
+                    upstream=f"{FLAGS.host_name}:{server1_port}",
+                ) as primary2:
+                    self.assertTrue(
+                        primary2.ExpectOutput(
+                            lambda m: m.find("management server listening on") > 0
+                        )
+                    )
+                    primary2.UpdateResources(
+                        cluster="test_cluster_2",
+                        upstream_port=server3_port,
+                        upstream_host=FLAGS.host_name,
+                    )
+                    stats = client.GetStats(20)
                     self.assertEqual(stats.num_failures, 0)
                     self.assertIn("server3", stats.rpcs_by_peer)
         except KeyboardInterrupt:
