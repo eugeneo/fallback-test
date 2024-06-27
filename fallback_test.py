@@ -62,6 +62,7 @@ class DockerProcessTest(unittest.TestCase):
             clientImage=FLAGS.client_image,
             controlPlaneImage=FLAGS.control_plane_image,
             workingDir=working_dir,
+            logToConsole=True,
         )
         try:
             with (
@@ -140,6 +141,7 @@ class DockerProcessTest(unittest.TestCase):
             clientImage=FLAGS.client_image,
             controlPlaneImage=FLAGS.control_plane_image,
             workingDir=working_dir,
+            logToConsole=True,
         )
         try:
             with (
@@ -225,6 +227,7 @@ class DockerProcessTest(unittest.TestCase):
             clientImage=FLAGS.client_image,
             controlPlaneImage=FLAGS.control_plane_image,
             workingDir=working_dir,
+            logToConsole=True,
         )
         try:
             with (
@@ -257,12 +260,10 @@ class DockerProcessTest(unittest.TestCase):
                     "type.googleapis.com/envoy.config.cluster.v3.Cluster",
                     "test_cluster_2",
                 )
-                print(
-                    primary.UpdateResources(
-                        cluster="test_cluster_2",
-                        upstream_port=server3_port,
-                        upstream_host=FLAGS.host_name,
-                    )
+                primary.UpdateResources(
+                    cluster="test_cluster_2",
+                    upstream_port=server3_port,
+                    upstream_host=FLAGS.host_name,
                 )
                 stats = client.GetStats(10)
                 self.assertEqual(stats.num_failures, 0)

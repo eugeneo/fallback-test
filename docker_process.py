@@ -1,6 +1,7 @@
 import atexit
 import copy
 from enum import Enum
+import io
 import multiprocessing
 import signal
 import sys
@@ -50,6 +51,7 @@ def _RunDocker(
 
 
 class DockerProcess:
+
     def __init__(
         self,
         image: str,
@@ -80,7 +82,7 @@ class DockerProcess:
 
     def Process(self, image: str, config: docker.types.ContainerConfig | None):
         if self.__logFileName != None:
-            self.__logFile = open(self.__logFileName, "w+")
+            self.__logFile = open(self.__logFileName, "xt")
         atexit.register(lambda: self.__OnExit())
         signal.signal(signal.SIGTERM, lambda _signo, _frame: self.__OnExit())
         process = self

@@ -16,84 +16,83 @@ from protos.grpc.testing.xdsconfig import (
 )
 
 
-class ControlPlane:
+class GrpcProcess:
+
     def __init__(self, process: DockerProcess, manager: "ProcessManager", port: int):
         self.__process = process
         self.__manager = manager
         self.__port = port
-
-    def __enter__(self) -> "ControlPlane":
-        self.__process.__enter__()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> "ControlPlane":
-        self.__process.__exit__(exc_type=exc_type, exc_val=exc_val, exc_tb=exc_tb)
-
-    def ExpectOutput(self, predicate: Callable[[str], bool], timeout_s=5) -> bool:
-        return self.__manager.ExpectOutput(self.__process.name, predicate, timeout_s)
-
-    def StopOnResourceRequest(
-        self, resource_type: str, resource_name: str
-    ) -> control_pb2.StopOnRequestResponse:
-        with grpc.insecure_channel(f"localhost:{self.__port}") as channel:
-            stub = service_pb2_grpc.XdsConfigControlServiceStub(channel)
-            res = stub.StopOnRequest(
-                control_pb2.StopOnRequestRequest(
-                    resource_type=resource_type, resource_name=resource_name
-                )
-            )
-            print(res)
-            return res
-
-    def UpdateResources(
-        self, cluster: str, upstream_port: int, upstream_host="localhost"
-    ):
-        with grpc.insecure_channel(f"localhost:{self.__port}") as channel:
-            stub = service_pb2_grpc.XdsConfigControlServiceStub(channel)
-            return stub.UpsertResources(
-                control_pb2.UpsertResourcesRequest(
-                    cluster=cluster,
-                    upstream_host=upstream_host,
-                    upstream_port=upstream_port,
-                )
-            )
-
-
-class Client:
-    def __init__(self, process: DockerProcess, manager: "ProcessManager", port: int):
-        self.__process = process
-        self.__manager = manager
-        self.__port = port
+        self.__grpc_channel: grpc.Channel = None
 
     def __enter__(self) -> "Client":
         self.__process.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> "Client":
+        if self.__grpc_channel != None:
+            self.__grpc_channel.close()
         self.__process.__exit__(exc_type=exc_type, exc_val=exc_val, exc_tb=exc_tb)
 
     def ExpectOutput(self, predicate: Callable[[str], bool], timeout_s=5) -> bool:
         return self.__manager.ExpectOutput(self.__process.name, predicate, timeout_s)
 
-    def GetStats(self, num_rpcs: int) -> messages_pb2.LoadBalancerStatsResponse:
-        with grpc.insecure_channel(f"localhost:{self.__port}") as channel:
-            stub = test_pb2_grpc.LoadBalancerStatsServiceStub(channel)
-            res = stub.GetClientStats(
-                messages_pb2.LoadBalancerStatsRequest(
-                    num_rpcs=num_rpcs, timeout_sec=ceil(num_rpcs * 1.5)
-                )
+    def channel(self) -> grpc.Channel:
+        if self.__grpc_channel == None:
+            self.__grpc_channel = grpc.insecure_channel(f"localhost:{self.__port}")
+        return self.__grpc_channel
+
+
+class ControlPlane(GrpcProcess):
+    def __init__(self, process: DockerProcess, manager: "ProcessManager", port: int):
+        super().__init__(process, manager, port)
+
+    def StopOnResourceRequest(
+        self, resource_type: str, resource_name: str
+    ) -> control_pb2.StopOnRequestResponse:
+        stub = service_pb2_grpc.XdsConfigControlServiceStub(self.channel())
+        res = stub.StopOnRequest(
+            control_pb2.StopOnRequestRequest(
+                resource_type=resource_type, resource_name=resource_name
             )
-            print(res)
-            return res
+        )
+        return res
+
+    def UpdateResources(
+        self, cluster: str, upstream_port: int, upstream_host="localhost"
+    ):
+        stub = service_pb2_grpc.XdsConfigControlServiceStub(self.channel())
+        return stub.UpsertResources(
+            control_pb2.UpsertResourcesRequest(
+                cluster=cluster,
+                upstream_host=upstream_host,
+                upstream_port=upstream_port,
+            )
+        )
+
+
+class Client(GrpcProcess):
+    def __init__(self, process: DockerProcess, manager: "ProcessManager", port: int):
+        super().__init__(process, manager, port)
+
+    def GetStats(self, num_rpcs: int) -> messages_pb2.LoadBalancerStatsResponse:
+        stub = test_pb2_grpc.LoadBalancerStatsServiceStub(self.channel())
+        res = stub.GetClientStats(
+            messages_pb2.LoadBalancerStatsRequest(
+                num_rpcs=num_rpcs, timeout_sec=ceil(num_rpcs * 1.5)
+            )
+        )
+        return res
 
 
 class ProcessManager:
+
     def __init__(
         self,
         serverImage: str,
         clientImage: str,
         controlPlaneImage: str,
         workingDir: WorkingDir,
+        logToConsole=False,
     ):
         self.__queue = Queue()
         self.__dockerClient = DockerClient.from_env()
@@ -103,6 +102,7 @@ class ProcessManager:
         self.__workingDir = workingDir
         self.logs = []
         self.__outputs = {}
+        self.__logToConsole = logToConsole
 
     def StartServer(self, name: str, port: int) -> DockerProcess:
         return self.__StartDockerProcess(
@@ -179,7 +179,8 @@ class ProcessManager:
         event: ChildProcessEvent = self.__queue.get(timeout=timeout)
         source = event.source
         message = event.data
-        print(f"[{source}] {message}")
+        if self.__logToConsole:
+            print(f"[{source}] {message}")
         if not source in self.__outputs:
             self.__outputs[source] = []
         self.__outputs[source].append(message)
