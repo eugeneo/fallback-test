@@ -41,6 +41,9 @@ class GrpcProcess:
             self.__grpc_channel = grpc.insecure_channel(f"localhost:{self.__port}")
         return self.__grpc_channel
 
+    def port(self):
+        return self.__port
+
 
 class ControlPlane(GrpcProcess):
     def __init__(self, process: DockerProcess, manager: "ProcessManager", port: int):
@@ -88,28 +91,34 @@ class ProcessManager:
 
     def __init__(
         self,
-        serverImage: str,
+        testCase: str,
         clientImage: str,
         controlPlaneImage: str,
+        serverImage: str,
         workingDir: WorkingDir,
         logToConsole=False,
     ):
-        self.__queue = Queue()
-        self.__dockerClient = DockerClient.from_env()
-        self.__clientImage = clientImage
-        self.__serverImage = serverImage
-        self.__controlPlaneImage = controlPlaneImage
-        self.__workingDir = workingDir
         self.logs = []
-        self.__outputs = {}
+        self.__clientImage = clientImage
+        self.__controlPlaneImage = controlPlaneImage
+        self.__dockerClient = DockerClient.from_env()
         self.__logToConsole = logToConsole
+        self.__outputs = {}
+        self.__queue = Queue()
+        self.__serverImage = serverImage
+        self.__testCase = testCase
+        self.__workingDir = workingDir
 
-    def StartServer(self, name: str, port: int) -> DockerProcess:
-        return self.__StartDockerProcess(
-            self.__serverImage,
-            name=name,
-            ports={8080: port},
-            command=[],
+    def StartServer(self, name: str, port: int):
+        return GrpcProcess(
+            self.__StartDockerProcess(
+                self.__serverImage,
+                name=name,
+                ports={8080: port},
+                command=[],
+            ),
+            manager=self,
+            port=port,
         )
 
     def StartClient(self, port: int, url: str, name="client") -> Client:
@@ -154,7 +163,7 @@ class ProcessManager:
         volumes={},
         verbosity="info",
     ):
-        log_name = self.__workingDir.log_path(name)
+        log_name = self.__workingDir.log_path(self.__testCase, name)
         self.logs.append(log_name)
         return DockerProcess(
             image,
@@ -172,6 +181,7 @@ class ProcessManager:
             hostname=name,
             logFile=log_name,
             ports=ports,
+            remove=True,
             volumes=volumes,
         )
 

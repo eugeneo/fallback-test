@@ -32,12 +32,14 @@ class WorkingDir:
             if not self.__working_dir.exists():
                 print(f"Creating {self.__working_dir}")
                 self.mount_dir().mkdir(parents=True)
-                self.log_path("a").parent.mkdir(parents=True)
                 return
         raise Exception("Couldn't find a free working directory")
 
-    def log_path(self, name: str) -> Path:
-        return self.working_dir() / "logs" / f"{name}.log"
+    def log_path(self, test_case: str, name: str) -> Path:
+        parent = self.working_dir() / "logs" / test_case
+        if not parent.exists():
+            parent.mkdir(parents=True)
+        return parent / f"{name}.log"
 
     def mount_dir(self) -> Path:
         return self.working_dir() / "mnt"
@@ -46,3 +48,6 @@ class WorkingDir:
         if self.__working_dir == None:
             raise RuntimeError("Working dir was not created yet")
         return self.__working_dir
+
+    def xds_config_server_port(self, n: int):
+        return self.__ports[n]

@@ -9,8 +9,6 @@ from working_dir import WorkingDir
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_boolean("dry_run", False, "Don't actually run the test")
-flags.DEFINE_string("working_dir", "", "Working directory for the test")
 flags.DEFINE_string(
     "client_image",
     "us-docker.pkg.dev/grpc-testing/psm-interop/cpp-client:master",
@@ -26,273 +24,199 @@ flags.DEFINE_string(
     "us-docker.pkg.dev/grpc-testing/psm-interop/cpp-server:master",
     "Server image",
 )
-flags.DEFINE_string("node", "test-id", "Node ID")
-flags.DEFINE_integer(
-    "message_timeout", 5, "Timeout waiting for the messages from the server processes"
-)
-flags.DEFINE_boolean(
-    "hang", False, "Hang after the test so the state of the mesh could be explored"
-)
 flags.DEFINE_string(
     "host_name", "host.docker.internal", "Host name all the services are bound on"
 )
+flags.DEFINE_string("node", "test-id", "Node ID")
+flags.DEFINE_string("working_dir", "", "Working directory for the test")
 
 
-def get_free_port() -> int:
+def GetFreePort() -> int:
     with (sock := socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
         sock.bind(("localhost", 0))
         return sock.getsockname()[1]
 
 
 class DockerProcessTest(unittest.TestCase):
+    working_dir: WorkingDir = None
+
+    @staticmethod
+    def setUpClass():
+        DockerProcessTest.working_dir = WorkingDir(
+            FLAGS.working_dir,
+            ports=[GetFreePort() for _ in range(2)],
+            host_name=FLAGS.host_name,
+        )
+
+    def setUp(self):
+        self.__process_manager = ProcessManager(
+            clientImage=FLAGS.client_image,
+            controlPlaneImage=FLAGS.control_plane_image,
+            serverImage=FLAGS.server_image,
+            testCase=self.id(),
+            workingDir=DockerProcessTest.working_dir,
+            logToConsole=True,
+        )
+
+    def tearDown(self) -> None:
+        logs = "\n".join([f"\t{log}" for log in sorted(self.__process_manager.logs)])
+        print(f"Run finished:\n{logs}")
+
+    def StartClient(self, port: int = None):
+        return self.__process_manager.StartClient(
+            port=GetFreePort() if port == None else port, url="xds:///listener_0"
+        )
+
+    def StartControlPlane(self, name: str, index: int, upstream_port: int):
+        port = self.working_dir.xds_config_server_port(index)
+        return self.__process_manager.StartControlPlane(
+            name=name,
+            port=port,
+            nodeId=FLAGS.node,
+            upstream=f"{FLAGS.host_name}:{upstream_port}",
+        )
+
+    def StartServer(self, name: str, port: int = None):
+        return self.__process_manager.StartServer(
+            name, GetFreePort() if port == None else port
+        )
 
     def test_fallback_on_startup(self):
-        [primary_port, fallback_port, server1_port, server2_port, client_port] = [
-            get_free_port() for _ in range(5)
-        ]
-        # Start servers on the free port
-        working_dir = WorkingDir(
-            FLAGS.working_dir,
-            ports=[primary_port, fallback_port],
-            host_name=FLAGS.host_name,
-        )
-        print("Working directory: ", working_dir.working_dir())
-        process_manager = ProcessManager(
-            serverImage=FLAGS.server_image,
-            clientImage=FLAGS.client_image,
-            controlPlaneImage=FLAGS.control_plane_image,
-            workingDir=working_dir,
-            logToConsole=True,
-        )
-        try:
-            with (
-                process_manager.StartServer(name="server1", port=server1_port),
-                process_manager.StartServer(name="server2", port=server2_port),
-                process_manager.StartClient(
-                    port=client_port, url="xds:///listener_0"
-                ) as client,
-            ):
-                self.assertTrue(
-                    client.ExpectOutput(
-                        lambda message: message.find(
-                            "UNAVAILABLE: xDS channel for server"
-                        )
-                        >= 0,
-                    )
+        with (
+            self.StartServer(name="server1") as server1,
+            self.StartServer(name="server2") as server2,
+            self.StartClient() as client,
+        ):
+            self.assertTrue(
+                client.ExpectOutput(
+                    lambda message: message.find("UNAVAILABLE: xDS channel for server")
+                    >= 0,
                 )
-                self.assertEqual(client.GetStats(5).num_failures, 5)
-                # Secondary xDS config start, send traffic to server2
-                with process_manager.StartControlPlane(
-                    name="fallback_xds_config",
-                    port=fallback_port,
-                    nodeId=FLAGS.node,
-                    upstream=f"{FLAGS.host_name}:{server2_port}",
-                ):
-                    stats = client.GetStats(5)
-                    self.assertGreater(stats.rpcs_by_peer["server2"], 0)
-                    self.assertNotIn("server1", stats.rpcs_by_peer)
-                    # Primary xDS config server start. Will use it
-                    with process_manager.StartControlPlane(
-                        name="primary_xds_config",
-                        port=primary_port,
-                        nodeId=FLAGS.node,
-                        upstream=f"{FLAGS.host_name}:{server1_port}",
-                    ):
-                        self.assertTrue(
-                            client.ExpectOutput(
-                                lambda message: message.find(
-                                    "parsed Cluster example_proxy_cluster"
-                                )
-                                >= 0,
-                            )
-                        )
-                        stats = client.GetStats(10)
-                        self.assertEqual(stats.num_failures, 0)
-                        self.assertIn("server1", stats.rpcs_by_peer)
-                        self.assertGreater(stats.rpcs_by_peer["server1"], 0)
-                    # Primary config server down
-                    stats = client.GetStats(5)
-                    self.assertEqual(stats.num_failures, 0)
-                    self.assertEqual(stats.rpcs_by_peer["server1"], 5)
-                # Fallback config server down
+            )
+            self.assertEqual(client.GetStats(5).num_failures, 5)
+            # Secondary xDS config start, send traffic to server2
+            with self.StartControlPlane(
+                name="fallback_xds_config", index=1, upstream_port=server2.port()
+            ):
                 stats = client.GetStats(5)
-                self.assertEqual(stats.num_failures, 0)
-                self.assertEqual(stats.rpcs_by_peer["server1"], 5)
-        except KeyboardInterrupt:
-            # Stack trace is useless here, reduce log noise
-            print("KeyboardInterrupt", file=sys.stderr)
-        finally:
-            logs = "\n".join([f"\t{log}" for log in sorted(process_manager.logs)])
-            print(f"Run finished:\n{logs}")
-
-    def test_fallback_mid_startup(self):
-        [primary_port, fallback_port, server1_port, server2_port, client_port] = [
-            get_free_port() for _ in range(5)
-        ]
-        # Start servers on the free port
-        working_dir = WorkingDir(
-            FLAGS.working_dir,
-            ports=[primary_port, fallback_port],
-            host_name=FLAGS.host_name,
-        )
-        print("Working directory: ", working_dir.working_dir())
-        process_manager = ProcessManager(
-            serverImage=FLAGS.server_image,
-            clientImage=FLAGS.client_image,
-            controlPlaneImage=FLAGS.control_plane_image,
-            workingDir=working_dir,
-            logToConsole=True,
-        )
-        try:
-            with (
-                process_manager.StartServer(name="server1", port=server1_port),
-                process_manager.StartServer(name="server2", port=server2_port),
-                process_manager.StartControlPlane(
-                    name="primary_xds_config_run_1",
-                    port=primary_port,
-                    nodeId=FLAGS.node,
-                    upstream=f"{FLAGS.host_name}:{server1_port}",
-                ) as primary,
-                process_manager.StartControlPlane(
-                    name="fallback_xds_config",
-                    port=fallback_port,
-                    nodeId=FLAGS.node,
-                    upstream=f"{FLAGS.host_name}:{server2_port}",
-                ),
-            ):
-                self.assertTrue(
-                    primary.ExpectOutput(
-                        lambda m: m.find("management server listening on") > 0
-                    )
-                )
-                primary.StopOnResourceRequest(
-                    "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-                    "example_proxy_cluster",
-                )
-                with (
-                    process_manager.StartClient(
-                        port=client_port, url="xds:///listener_0"
-                    ) as client,
+                self.assertGreater(stats.rpcs_by_peer["server2"], 0)
+                self.assertNotIn("server1", stats.rpcs_by_peer)
+                # Primary xDS config server start. Will use it
+                with self.StartControlPlane(
+                    name="primary_xds_config", index=0, upstream_port=server1.port()
                 ):
                     self.assertTrue(
                         client.ExpectOutput(
-                            lambda m: m.find("creating xds client") >= 0
+                            lambda message: message.find(
+                                "parsed Cluster example_proxy_cluster"
+                            )
+                            >= 0,
                         )
                     )
-                    # Secondary xDS config start, send traffic to server2
-                    stats = client.GetStats(5)
+                    stats = client.GetStats(10)
                     self.assertEqual(stats.num_failures, 0)
-                    self.assertGreater(stats.rpcs_by_peer["server2"], 0)
-                    self.assertNotIn("server1", stats.rpcs_by_peer)
-                    with process_manager.StartControlPlane(
-                        name="primary_xds_config_run_2",
-                        port=primary_port,
-                        nodeId=FLAGS.node,
-                        upstream=f"{FLAGS.host_name}:{server1_port}",
-                    ):
-                        self.assertTrue(
-                            primary.ExpectOutput(
-                                lambda m: m.find("management server listening on") > 0
-                            )
-                        )
-                        stats = client.GetStats(10)
-                        self.assertEqual(stats.num_failures, 0)
-                        self.assertIn("server1", stats.rpcs_by_peer)
-                        self.assertGreater(stats.rpcs_by_peer["server1"], 0)
-        except KeyboardInterrupt:
-            # Stack trace is useless here, reduce log noise
-            print("KeyboardInterrupt", file=sys.stderr)
-        finally:
-            logs = "\n".join([f"\t{log}" for log in sorted(process_manager.logs)])
-            print(f"Run finished:\n{logs}")
+                    self.assertIn("server1", stats.rpcs_by_peer)
+                    self.assertGreater(stats.rpcs_by_peer["server1"], 0)
+                # Primary config server down
+                stats = client.GetStats(5)
+                self.assertEqual(stats.num_failures, 0)
+                self.assertEqual(stats.rpcs_by_peer["server1"], 5)
+            # Fallback config server down
+            stats = client.GetStats(5)
+            self.assertEqual(stats.num_failures, 0)
+            self.assertEqual(stats.rpcs_by_peer["server1"], 5)
 
-    def test_fallback_mid_update(self):
-        [
-            primary_port,
-            fallback_port,
-            server1_port,
-            server2_port,
-            server3_port,
-            client_port,
-        ] = [get_free_port() for _ in range(6)]
-        # Start servers on the free port
-        working_dir = WorkingDir(
-            FLAGS.working_dir,
-            ports=[primary_port, fallback_port],
-            host_name=FLAGS.host_name,
-        )
-        print("Working directory: ", working_dir.working_dir())
-        process_manager = ProcessManager(
-            serverImage=FLAGS.server_image,
-            clientImage=FLAGS.client_image,
-            controlPlaneImage=FLAGS.control_plane_image,
-            workingDir=working_dir,
-            logToConsole=True,
-        )
-        try:
-            with (
-                process_manager.StartServer(name="server1", port=server1_port),
-                process_manager.StartServer(name="server2", port=server2_port),
-                process_manager.StartServer(name="server3", port=server3_port),
-                process_manager.StartControlPlane(
-                    name="primary_xds_config_run_1",
-                    port=primary_port,
-                    nodeId=FLAGS.node,
-                    upstream=f"{FLAGS.host_name}:{server1_port}",
-                ) as primary,
-                process_manager.StartControlPlane(
-                    name="fallback_xds_config",
-                    port=fallback_port,
-                    nodeId=FLAGS.node,
-                    upstream=f"{FLAGS.host_name}:{server2_port}",
-                ),
-                process_manager.StartClient(
-                    port=client_port, url="xds:///listener_0"
-                ) as client,
-            ):
+    def test_fallback_mid_startup(self):
+        with (
+            self.StartServer(name="server1") as server1,
+            self.StartServer(name="server2") as server2,
+            self.StartControlPlane(
+                name="primary_xds_config_run_1",
+                index=0,
+                upstream_port=server1.port(),
+            ) as primary,
+            self.StartControlPlane(
+                name="fallback_xds_config",
+                index=1,
+                upstream_port=server2.port(),
+            ),
+        ):
+            self.assertTrue(
+                primary.ExpectOutput(
+                    lambda m: m.find("management server listening on") > 0
+                )
+            )
+            primary.StopOnResourceRequest(
+                "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+                "example_proxy_cluster",
+            )
+            with (self.StartClient() as client,):
                 self.assertTrue(
                     client.ExpectOutput(lambda m: m.find("creating xds client") >= 0)
                 )
                 # Secondary xDS config start, send traffic to server2
                 stats = client.GetStats(5)
-                self.assertGreater(stats.rpcs_by_peer["server1"], 0)
-                primary.StopOnResourceRequest(
-                    "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-                    "test_cluster_2",
-                )
-                primary.UpdateResources(
-                    cluster="test_cluster_2",
-                    upstream_port=server3_port,
-                    upstream_host=FLAGS.host_name,
-                )
-                stats = client.GetStats(10)
                 self.assertEqual(stats.num_failures, 0)
-                self.assertIn("server2", stats.rpcs_by_peer)
-                with process_manager.StartControlPlane(
+                self.assertGreater(stats.rpcs_by_peer["server2"], 0)
+                self.assertNotIn("server1", stats.rpcs_by_peer)
+                with self.StartControlPlane(
                     name="primary_xds_config_run_2",
-                    port=primary_port,
-                    nodeId=FLAGS.node,
-                    upstream=f"{FLAGS.host_name}:{server1_port}",
-                ) as primary2:
+                    index=0,
+                    upstream_port=server1.port(),
+                ):
                     self.assertTrue(
-                        primary2.ExpectOutput(
+                        primary.ExpectOutput(
                             lambda m: m.find("management server listening on") > 0
                         )
                     )
-                    primary2.UpdateResources(
-                        cluster="test_cluster_2",
-                        upstream_port=server3_port,
-                        upstream_host=FLAGS.host_name,
-                    )
-                    stats = client.GetStats(20)
+                    stats = client.GetStats(10)
                     self.assertEqual(stats.num_failures, 0)
-                    self.assertIn("server3", stats.rpcs_by_peer)
-        except KeyboardInterrupt:
-            # Stack trace is useless here, reduce log noise
-            print("KeyboardInterrupt", file=sys.stderr)
-        finally:
-            logs = "\n".join([f"\t{log}" for log in sorted(process_manager.logs)])
-            print(f"Run finished:\n{logs}")
+                    self.assertIn("server1", stats.rpcs_by_peer)
+                    self.assertGreater(stats.rpcs_by_peer["server1"], 0)
+
+    def test_fallback_mid_update(self):
+        with (
+            self.StartServer(name="server1") as server1,
+            self.StartServer(name="server2") as server2,
+            self.StartServer(name="server3") as server3,
+            self.StartControlPlane(
+                name="primary_xds_config_run_1", index=0, upstream_port=server1.port()
+            ) as primary,
+            self.StartControlPlane(
+                name="fallback_xds_config", index=1, upstream_port=server2.port()
+            ),
+            self.StartClient() as client,
+        ):
+            self.assertTrue(
+                client.ExpectOutput(lambda m: m.find("creating xds client") >= 0)
+            )
+            # Secondary xDS config start, send traffic to server2
+            stats = client.GetStats(5)
+            self.assertGreater(stats.rpcs_by_peer["server1"], 0)
+            primary.StopOnResourceRequest(
+                "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+                "test_cluster_2",
+            )
+            primary.UpdateResources(
+                cluster="test_cluster_2",
+                upstream_port=server3.port(),
+                upstream_host=FLAGS.host_name,
+            )
+            stats = client.GetStats(10)
+            self.assertEqual(stats.num_failures, 0)
+            self.assertIn("server2", stats.rpcs_by_peer)
+            # Check that post-recovery uses a new config
+            with self.StartControlPlane(
+                name="primary_xds_config_run_2", index=0, upstream_port=server3.port()
+            ) as primary2:
+                self.assertTrue(
+                    primary2.ExpectOutput(
+                        lambda m: m.find("management server listening on") > 0
+                    )
+                )
+                stats = client.GetStats(20)
+                self.assertEqual(stats.num_failures, 0)
+                self.assertIn("server3", stats.rpcs_by_peer)
 
 
 if __name__ == "__main__":
