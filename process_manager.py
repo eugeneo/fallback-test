@@ -32,6 +32,62 @@ class ChildProcessEvent:
         return f"data={self.data}, source={self.source}"
 
 
+class ProcessManager:
+
+    def __init__(
+        self,
+        testCase: str,
+        workingDir: WorkingDir,
+        nodeId: str,
+        logToConsole=False,
+        verbosity="info",
+    ):
+        self.logs = []
+        self.dockerClient = DockerClient.from_env()
+        self.nodeId = nodeId
+        self.__logToConsole = logToConsole
+        self.__outputs = {}
+        self.__queue = Queue()
+        self.__testCase = testCase
+        self.__workingDir = workingDir
+        self.verbosity = verbosity
+
+    def GetLog(self, name: str):
+        log_name = self.__workingDir.log_path(self.__testCase, name)
+        self.logs.append(log_name)
+        return log_name
+
+    def NextEvent(self, timeout: int) -> ChildProcessEvent:
+        event: ChildProcessEvent = self.__queue.get(timeout=timeout)
+        source = event.source
+        message = event.data
+        if self.__logToConsole:
+            logging.debug(f"[%s] %s", source, message)
+        if not source in self.__outputs:
+            self.__outputs[source] = []
+        self.__outputs[source].append(message)
+        return event
+
+    def ExpectOutput(self, source: str, message: str, timeout_s=5) -> bool:
+        logging.debug(f'Waiting for message "%s" on %s', message, source)
+        if source in self.__outputs:
+            for m in self.__outputs[source]:
+                if m.find(message) >= 0:
+                    return True
+        deadline = datetime.now() + timedelta(seconds=timeout_s)
+        while datetime.now() <= deadline:
+            event = self.NextEvent(timeout_s)
+            if event.source == source and event.data.find(message) >= 0:
+                return True
+        return False
+
+    def OnMessage(self, source: str, message: str):
+        self.__queue.put(ChildProcessEvent(source, message))
+
+    def mount_dir(self):
+        return self.__workingDir.mount_dir().absolute()
+
+
 def _Sanitize(l: str) -> str:
     if l.find("\0") < 0:
         return l
@@ -54,11 +110,12 @@ def Configure(config, image: str, name: str, verbosity: str):
 
 
 class DockerProcess:
+
     def __init__(
         self,
         image: str,
         name: str,
-        manager: "ProcessManager",
+        manager: ProcessManager,
         **config: docker.types.ContainerConfig,
     ):
         self.__manager = manager
@@ -111,7 +168,7 @@ class GrpcProcess:
 
     def __init__(
         self,
-        manager: "ProcessManager",
+        manager: ProcessManager,
         name: str,
         port: int,
         ports,
@@ -155,12 +212,14 @@ class GrpcProcess:
 
 class ControlPlane(GrpcProcess):
 
-    def __init__(self, manager: "ProcessManager", name: str, port: int, upstream: str):
+    def __init__(
+        self, manager: ProcessManager, name: str, port: int, upstream: str, image: str
+    ):
         super().__init__(
             manager=manager,
             name=name,
             port=port,
-            image=manager.controlPlaneImage,
+            image=image,
             ports={3333: port},
             command=["--upstream", str(upstream), "--node", manager.nodeId],
         )
@@ -191,11 +250,13 @@ class ControlPlane(GrpcProcess):
 
 class Client(GrpcProcess):
 
-    def __init__(self, manager: "ProcessManager", port: int, name: str, url: str):
+    def __init__(
+        self, manager: ProcessManager, port: int, name: str, url: str, image: str
+    ):
         super().__init__(
             manager=manager,
             port=port,
-            image=manager.clientImage,
+            image=image,
             name=name,
             command=[f"--server={url}", "--print_response"],
             ports={50052: port},
@@ -216,76 +277,3 @@ class Client(GrpcProcess):
             )
         )
         return res
-
-
-class ProcessManager:
-
-    def __init__(
-        self,
-        testCase: str,
-        clientImage: str,
-        controlPlaneImage: str,
-        serverImage: str,
-        workingDir: WorkingDir,
-        nodeId: str,
-        logToConsole=False,
-        verbosity="info",
-    ):
-        self.logs = []
-        self.clientImage = clientImage
-        self.controlPlaneImage = controlPlaneImage
-        self.dockerClient = DockerClient.from_env()
-        self.serverImage = serverImage
-        self.nodeId = nodeId
-        self.__logToConsole = logToConsole
-        self.__outputs = {}
-        self.__queue = Queue()
-        self.__testCase = testCase
-        self.__workingDir = workingDir
-        self.verbosity = verbosity
-
-    def GetLog(self, name: str):
-        log_name = self.__workingDir.log_path(self.__testCase, name)
-        self.logs.append(log_name)
-        return log_name
-
-    def StartServer(self, name: str, port: int):
-        return GrpcProcess(
-            self, name, port, ports={8080: port}, image=self.serverImage, command=[]
-        )
-
-    def StartClient(self, port: int, url: str, name="client"):
-        return Client(self, port, name, url)
-
-    def StartControlPlane(self, port: int, upstream: str, name="xds_config"):
-        return ControlPlane(self, name=name, port=port, upstream=upstream)
-
-    def NextEvent(self, timeout: int) -> ChildProcessEvent:
-        event: ChildProcessEvent = self.__queue.get(timeout=timeout)
-        source = event.source
-        message = event.data
-        if self.__logToConsole:
-            logging.debug(f"[%s] %s", source, message)
-        if not source in self.__outputs:
-            self.__outputs[source] = []
-        self.__outputs[source].append(message)
-        return event
-
-    def ExpectOutput(self, source: str, message: str, timeout_s=5) -> bool:
-        logging.debug(f'Waiting for message "%s" on %s', message, source)
-        if source in self.__outputs:
-            for m in self.__outputs[source]:
-                if m.find(message) >= 0:
-                    return True
-        deadline = datetime.now() + timedelta(seconds=timeout_s)
-        while datetime.now() <= deadline:
-            event = self.NextEvent(timeout_s)
-            if event.source == source and event.data.find(message) >= 0:
-                return True
-        return False
-
-    def OnMessage(self, source: str, message: str):
-        self.__queue.put(ChildProcessEvent(source, message))
-
-    def mount_dir(self):
-        return self.__workingDir.mount_dir().absolute()
