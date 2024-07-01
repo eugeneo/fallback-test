@@ -1,10 +1,12 @@
 import socket
 import unittest
 
-from absl import app, flags, logging
+from absl import flags, logging
+from absl.testing import absltest
 
-from process_manager import Client, ControlPlane, GrpcProcess, ProcessManager
-from working_dir import WorkingDir
+
+from process_manager import Bootstrap, Client, ControlPlane, GrpcProcess, ProcessManager
+
 
 FLAGS = flags.FLAGS
 
@@ -26,9 +28,8 @@ flags.DEFINE_string(
 flags.DEFINE_string(
     "host_name", "host.docker.internal", "Host name all the services are bound on"
 )
-flags.DEFINE_bool("console", False, "Log child process output to console")
 flags.DEFINE_string("node", "test-id", "Node ID")
-flags.DEFINE_string("working_dir", "", "Working directory for the test")
+flags.DEFINE_string("bootstrap_dir", "", "Working directory for the test")
 
 
 def GetFreePort() -> int:
@@ -38,12 +39,12 @@ def GetFreePort() -> int:
 
 
 class DockerProcessTest(unittest.TestCase):
-    working_dir: WorkingDir = None
+    __bootstrap: Bootstrap = None
 
     @staticmethod
     def setUpClass():
-        DockerProcessTest.working_dir = WorkingDir(
-            FLAGS.working_dir,
+        DockerProcessTest.__bootstrap = Bootstrap(
+            FLAGS.bootstrap_dir,
             ports=[GetFreePort() for _ in range(2)],
             host_name=FLAGS.host_name,
         )
@@ -51,15 +52,9 @@ class DockerProcessTest(unittest.TestCase):
     def setUp(self):
         logging.info(f"Starting %s", self.id())
         self.__process_manager = ProcessManager(
-            testCase=self.id(),
-            workingDir=DockerProcessTest.working_dir,
-            logToConsole=FLAGS.console,
+            bootstrap=DockerProcessTest.__bootstrap,
             nodeId=FLAGS.node,
         )
-
-    def tearDown(self) -> None:
-        logs = "\n".join([f"\t{log}" for log in sorted(self.__process_manager.logs)])
-        logging.info("%s finished:\n%s", self.id(), logs)
 
     def StartClient(self, port: int = None, name="client"):
         logging.debug("Starting client process")
@@ -73,7 +68,7 @@ class DockerProcessTest(unittest.TestCase):
 
     def StartControlPlane(self, name: str, index: int, upstream_port: int):
         logging.debug(f'Starting control plane "%s"', name)
-        port = self.working_dir.xds_config_server_port(index)
+        port = self.__bootstrap.xds_config_server_port(index)
         return ControlPlane(
             self.__process_manager,
             name=name,
@@ -210,4 +205,4 @@ class DockerProcessTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    app.run(lambda _: unittest.main())
+    absltest.main()

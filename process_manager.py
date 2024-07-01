@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
-import io
 from math import ceil
+from pathlib import Path, PosixPath
 from queue import Queue
 from threading import Thread
 from typing import List
@@ -13,11 +13,50 @@ import grpc
 
 from protos.grpc.testing import messages_pb2
 from protos.grpc.testing import test_pb2_grpc
-from working_dir import WorkingDir
 from protos.grpc.testing.xdsconfig import (
     control_pb2,
     service_pb2_grpc,
 )
+from mako.template import Template
+
+
+class Bootstrap:
+
+    def __init__(self, base: str, ports: List[int], host_name: str):
+        self.__base = PosixPath(base)
+        self.__host_name = host_name
+        self.__ports = ports
+        self.__mount_dir: Path = None
+        self._MakeWorkingDir(self.__base)
+        # Use Mako
+        template = Template(filename="templates/bootstrap.mako")
+        file = template.render(
+            servers=[f"{self.__host_name}:{port}" for port in self.__ports]
+        )
+        destination = self.mount_dir() / "bootstrap.json"
+        with open(destination, "w") as f:
+            f.write(file)
+            logging.debug(f"Generated bootstrap file at %s", destination)
+
+    def _MakeWorkingDir(self, base: str):
+        for i in range(100):
+            # Date time to string
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            id = f"_{i}" if i > 0 else ""
+            self.__mount_dir = base / f"testrun_{run_id}{id}"
+            if not self.__mount_dir.exists():
+                logging.debug(f"Creating %s", self.__mount_dir)
+                self.mount_dir().mkdir(parents=True)
+                return
+        raise Exception("Couldn't find a free working directory")
+
+    def mount_dir(self) -> Path:
+        if self.__mount_dir == None:
+            raise RuntimeError("Working dir was not created yet")
+        return self.__mount_dir.absolute()
+
+    def xds_config_server_port(self, n: int):
+        return self.__ports[n]
 
 
 class ChildProcessEvent:
@@ -36,33 +75,22 @@ class ProcessManager:
 
     def __init__(
         self,
-        testCase: str,
-        workingDir: WorkingDir,
+        bootstrap: Bootstrap,
         nodeId: str,
-        logToConsole=False,
         verbosity="info",
     ):
-        self.logs = []
         self.dockerClient = DockerClient.from_env()
         self.nodeId = nodeId
-        self.__logToConsole = logToConsole
         self.__outputs = {}
         self.__queue = Queue()
-        self.__testCase = testCase
-        self.__workingDir = workingDir
+        self.__bootstrap = bootstrap
         self.verbosity = verbosity
-
-    def GetLog(self, name: str):
-        log_name = self.__workingDir.log_path(self.__testCase, name)
-        self.logs.append(log_name)
-        return log_name
 
     def NextEvent(self, timeout: int) -> ChildProcessEvent:
         event: ChildProcessEvent = self.__queue.get(timeout=timeout)
         source = event.source
         message = event.data
-        if self.__logToConsole:
-            logging.debug(f"[%s] %s", source, message)
+        logging.info(f"[%s] %s", source, message)
         if not source in self.__outputs:
             self.__outputs[source] = []
         self.__outputs[source].append(message)
@@ -85,7 +113,7 @@ class ProcessManager:
         self.__queue.put(ChildProcessEvent(source, message))
 
     def mount_dir(self):
-        return self.__workingDir.mount_dir().absolute()
+        return self.__bootstrap.mount_dir()
 
 
 def _Sanitize(l: str) -> str:
@@ -126,7 +154,6 @@ class DockerProcess:
         )
 
     def __enter__(self):
-        self.__logFile = open(self.__manager.GetLog(self.name), "xt")
         self.__container = self.__manager.dockerClient.containers.run(**self.__config)
         self.__thread = Thread(
             target=lambda process: process.LogReaderLoop(),
@@ -144,7 +171,6 @@ class DockerProcess:
             pass
         finally:
             self.__thread.join()
-            self.__logFile.close()
 
     def LogReaderLoop(self):
         prefix = ""
@@ -152,17 +178,7 @@ class DockerProcess:
             s = str(prefix + log.decode("utf-8"))
             prefix = "" if s[-1] == "\n" else s[s.rfind("\n") :]
             for l in s[: s.rfind("\n")].splitlines():
-                self.__OnMessage(_Sanitize(l))
-
-    def __OnMessage(self, message: str):
-        self.__manager.OnMessage(self.name, message)
-        try:
-            self.__logFile.write(message)
-            self.__logFile.write("\n")
-        except Exception:
-            # Ignore, this is just a log.
-            pass
-
+                self.__manager.OnMessage(self.name, _Sanitize(l))
 
 class GrpcProcess:
 
