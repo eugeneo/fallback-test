@@ -2,6 +2,8 @@ from datetime import datetime
 from pathlib import Path, PosixPath
 from typing import List
 
+from absl import logging
+
 from mako.template import Template
 
 
@@ -21,7 +23,7 @@ class WorkingDir:
         destination = self.mount_dir() / "bootstrap.json"
         with open(destination, "w") as f:
             f.write(file)
-            print(f"Generated bootstrap file at {destination}")
+            logging.debug(f"Generated bootstrap file at %s", destination)
 
     def _MakeWorkingDir(self, base: str):
         for i in range(100):
@@ -30,7 +32,7 @@ class WorkingDir:
             id = f"_{i}" if i > 0 else ""
             self.__working_dir = base / f"testrun_{run_id}{id}"
             if not self.__working_dir.exists():
-                print(f"Creating {self.__working_dir}")
+                logging.debug(f"Creating %s", self.__working_dir)
                 self.mount_dir().mkdir(parents=True)
                 return
         raise Exception("Couldn't find a free working directory")
